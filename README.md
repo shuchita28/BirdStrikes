@@ -12,5 +12,3 @@ For an existing data set from the FAA [1], we:
 - loaded data into the database, 
 - executed analytical SQL queries, 
 - and finally performed some simple visualization of the data
-
-P
