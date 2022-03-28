@@ -1,5 +1,6 @@
 # 🦅 Bird Strikes Analysis 🦅
 ## CS5200 Database Management Systems : Practicum 1
+## Project by: Shuchita Mishra & Soham Shinde
 
 Analyzing bird strikes on aircrafts based on data fetched from FAA
 
@@ -11,3 +12,5 @@ For an existing data set from the FAA [1], we:
 - loaded data into the database, 
 - executed analytical SQL queries, 
 - and finally performed some simple visualization of the data
+
+P
