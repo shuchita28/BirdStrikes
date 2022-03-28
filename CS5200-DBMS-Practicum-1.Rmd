@@ -1,0 +1,436 @@
+---
+title: "Practicum I"
+output: html_notebook
+---
+**Author(s) :** 
+
+**Soham Shinde (shinde.so@northeastern.edu)**
+
+**Shuchita Mishra (mishra.shu@northeastern.edu)**
+
+Overview : In this practicum we have built a database that can be used to analyze bird strikes on aircraft. For an existing data set from the FAA, we have built a logical data model, a relational schema, realize the relational schema in MySQL, load data into the database, execute SQL queries, a finally perform some simple analysis of the data.
+
+
+### Task 1 : Inspecting the data file; Create a new database and connect to it from R. Then create the following database schema :
+
+A. Connect to local instance of MySQL from R
+```{r setup, warning=FALSE}
+#importing all required libraries
+library(RMySQL) 
+
+#Set up and connect to MySQL database
+db_user     <- 'root'
+db_password <- 'password'
+db_name     <- 'myDB'
+db_host     <- 'localhost'
+db_port     <- 3306
+
+#Create a new database and connect to it from R
+mydb <-  dbConnect(RMySQL::MySQL(), 
+                   user = db_user, password = db_password, dbname = db_name, 
+                   host = db_host, port = db_port)
+```
+**Note :- For a local MySQL server, the connection host is always localhost.**
+
+
+Importing Text Files: read.table() and read.csv()
+
+```{r}
+require(readr)
+fileName  <- "BirdStrikesData.csv"
+
+bevDF <- read.csv(fileName, header = TRUE, stringsAsFactors = FALSE)
+```
+
+**Note :- Why have we used readr()?**
+          
+          - functions in readr can be about 10x faster
+          - no NA values in the data
+          
+```{r test}
+#Analyzing the data
+print(typeof(bevDF))
+print(dim(bevDF))
+print(head(bevDF))
+#Test for missing values
+print(sum(is.na(bevDF)))
+#Print names of columns
+print(names(bevDF))
+```
+
+129 rows have FlightDate=="", which later gets converted to 00/00/0000
+```{r}
+bevDF[which(bevDF$FlightDate==""),]
+```
+
+
+
+
+```{sql connection=mydb}
+DROP TABLE IF EXISTS incidents;
+```
+```{sql connection=mydb}
+DROP TABLE IF EXISTS airports;
+```
+```{sql connection=mydb}
+DROP TABLE IF EXISTS conditions;
+```
+
+Setting the FK keys check ON
+```{sql connection=mydb}
+SET FOREIGN_KEY_CHECKS = 1;
+```
+
+**Create a table that stores airports and states called airports(aid, airportName, airportCode, state). The airport code should be the airports international code, e.g., BOS for Boston or LGA for LaGuardia. However, you may leave it empty for this database -- it is for future expansion.**
+
+```{sql connection=mydb}
+CREATE TABLE airports(
+  aid INTEGER AUTO_INCREMENT PRIMARY KEY NOT NULL,
+  airportName VARCHAR(32) UNIQUE NOT NULL,
+  airportCode VARCHAR(10),
+  state VARCHAR(32) NOT NULL
+)
+```
+
+**Create a lookup table conditions(cid, condition, explanation) and link this lookup table to the incidents table with the cond foreign key. This table contains the value of all conditions, e.g., 'Overcast'. Leave the explanation column empty (future expansion).**
+
+```{sql connection = mydb}
+CREATE TABLE conditions(
+  cid INTEGER PRIMARY KEY NOT NULL,
+  `condition` VARCHAR(32) ,
+  explanation VARCHAR(32)
+);
+```
+
+**Create a table that stores bird strike incident called incidents(iid, date, origin, airline, aircraft, flightPhase, impact, cond). Only store the date, not the time of the incident. Make 'impact' a Boolean flag and use TRUE if there was damage, FALSE otherwise. Use appropriate data types and store the date as a date type not as text.**
+
+**Link the incidents and airports tables via the origin foreign key. We have linked origin to aid to preserve the uniqueness constraint.**
+
+```{sql connection=mydb}
+CREATE TABLE incidents(
+  iid INTEGER PRIMARY KEY NOT NULL,
+  date DATE NOT NULL,
+  origin INTEGER NOT NULL,
+  airline VARCHAR(32) NOT NULL,
+  aircraft VARCHAR(32) NOT NULL,
+  flightPhase VARCHAR(32) NOT NULL,
+  impact INTEGER NOT NULL,
+  cond INTEGER NOT NULL,
+  CONSTRAINT fk_1 FOREIGN KEY(origin) REFERENCES airports(aid) ON UPDATE CASCADE,
+  CONSTRAINT fk_2 FOREIGN KEY(cond) REFERENCES conditions(cid) ON UPDATE CASCADE
+);
+```
+
+**Harmonize the flight phases to be one of: takeoff, landing, inflight, unknown.**
+
+```{r}
+#unique(bevDF$When..Phase.of.flight)
+
+bevDF$When..Phase.of.flight[bevDF$When..Phase.of.flight=="Climb"|
+                            bevDF$When..Phase.of.flight=="Take-off run"] <- "takeoff"
+
+bevDF$When..Phase.of.flight[bevDF$When..Phase.of.flight=="Landing Roll" 
+                            | bevDF$When..Phase.of.flight=="Approach"
+                            | bevDF$When..Phase.of.flight=="Taxi" ] <- "landing"
+
+bevDF$When..Phase.of.flight[bevDF$When..Phase.of.flight=="Descent"] <- "inflight"
+
+bevDF$When..Phase.of.flight[bevDF$When..Phase.of.flight=="" |
+                            bevDF$When..Phase.of.flight=="Parked"] <- "unknown"
+
+#All values are updated accordingly
+unique(bevDF$When..Phase.of.flight)
+```
+
+**Assume "Business" to be an airline name**
+Done
+
+**Remove all military flights from the database**
+
+```{r}
+bevDF<- bevDF[!bevDF$Aircraft..Airline.Operator == "MILITARY",]
+```
+
+One of the key requirements was that the `impact` variable must be BOOLEAN type indicating TRUE for damage caused and FALSE for otherwise. However, MySQL DB converts the BOOLEAN datatype to TINYINT format because of which we found it easier and convenient to instead store the `impact` as a 0/1 flag; indicating 0 for no damage and 1 otherwise. 
+
+```{r}
+bevDF$Effect..Impact.to.flight = ifelse(bevDF$Effect..Impact.to.flight=="None",0,1)
+```
+
+```{r}
+typeof(bevDF$Effect..Impact.to.flight[1])
+```
+
+
+### Task 2 : Place the Bird Strikes CSV file into the same folder as the R Notebook and the load it into R without a path name. The default path is the local folder that contains the R Notebook when we have the R Notebook in an R Project. Once loaded, populate the tables with the mentioned subset of data. Use the mentioned column mappings
+
+One thing we observed was that a lot of the data in airports (especially from variables airportName and state) were duplicated, which causes data redundancy and inconsistency issues as we proceed with analysis and visualization. So we chose to remove all the duplicates from the said data. 
+
+```{r warning=FALSE}
+
+temp1 <- bevDF[!duplicated(bevDF[c('Airport..Name','Origin.State')]),]
+df_airports <- data.frame(aid = seq(1,length(temp1$Airport..Name)),
+                          airportName = temp1$Airport..Name,
+                          airportCode = "",
+                          state = temp1$Origin.State)
+
+
+
+temp2 <- bevDF[!duplicated(bevDF[c('Conditions..Sky')]),]
+df_conditions <- data.frame(cid=seq(1,length(temp2$Conditions..Sky)),
+                            condition=temp2$Conditions..Sky,
+                            explanation="")
+
+
+
+df_incidents <- data.frame(iid=bevDF$ï..Record.ID,
+                           date=as.Date(bevDF$FlightDate,"%m/%d/%Y"),
+                           origin=-1,
+                           aircraft=bevDF$Aircraft..Type,
+                           airline=bevDF$Aircraft..Airline.Operator,
+                           flightPhase=bevDF$When..Phase.of.flight,
+                           impact=bevDF$Effect..Impact.to.flight,
+                           cond=0)
+
+#Copying the data into the FK keys variables from the respective PK keys
+rangex = 1:nrow(df_incidents)
+
+for (r in rangex) {
+  a <- df_airports$aid[which(df_airports$airportName == bevDF$Airport..Name[r])]
+  
+  #print(a)
+  
+  df_incidents$origin[r] <-  strtoi(a)
+  
+  a <- df_conditions$cid[which(df_conditions$condition == bevDF$Conditions..Sky[r])]
+  
+  df_incidents$cond[r] <- strtoi(a)
+}
+```
+
+**Use default values where the data file does not contain values or leave empty**
+
+```{r}
+df_airports$airportName = ifelse(df_airports$airportName=="","unknown",df_airports$airportName)
+
+df_conditions$condition = ifelse(df_conditions$condition=="","unknown",df_conditions$condition)
+
+df_incidents$airline = ifelse(df_incidents$airline=="","unknown",df_incidents$airline)
+
+df_incidents$aircraft = ifelse(df_incidents$aircraft=="","unknown",df_incidents$aircraft)
+
+#df_incidents$origin = ifelse(df_incidents$origin==,"unknown",df_incidents$origin)
+```
+
+**Enabling DB write permission and bulk loading data into the tables**
+```{r}
+dbSendQuery(mydb, "SET GLOBAL local_infile = true;")
+
+dbWriteTable(mydb, "airports", df_airports, append = T,row.names=FALSE)
+
+dbWriteTable(mydb, "conditions", df_conditions, append = T,row.names=FALSE)
+
+dbWriteTable(mydb, "incidents", df_incidents, append = T,row.names=FALSE)
+```
+
+**Note:- Overwrite replace by Append, then add fk constraints as Overwrite wiped out the schema altogether**
+
+### Task 3 : Show that the loading of the data worked by displaying parts of each table (do not show the entire tables). 
+
+```{sql connection=mydb}
+SELECT * 
+FROM conditions
+LIMIT 10;
+```
+As we can see, the `conditions` table has cid (primary key), condition (which is data fetched from Conditons.Sky) and explanation (which is empty for now as a part of the expansion process). This lookup table will provide the conditions for the `cond` variable in incidents table as well. 
+
+```{sql connection=mydb}
+SELECT * 
+FROM airports
+LIMIT 10;
+```
+As we can see, the `airports` table has unique primary key aid, airportName, airportCode (which is empty for now as a part of the expansion process) and the state of the airport in variable state. As we removed the duplicated rows in airports (filtering by airportName and state), we also handled data redundancy issues. 
+
+```{sql connection=mydb}
+SELECT * 
+FROM incidents
+LIMIT 10;
+```
+The `incidents` table is the most important table in our schema as it contains all the information about the bird strike incident and also links to the other two tables using FK relationships. The `date` is in DATE datatype as instructed and `impact` is a 0/1 flag (which has been explained before). Apart from this, almost all variables are in the correct datatype. 
+
+### Task 4 : Create a SQL query against your database to find the number of bird strike incidents for each flight phase. 
+
+```{sql connection=mydb}
+SELECT flightPhase, COUNT(iid) as number_of_bird_strike_incidents
+FROM incidents
+GROUP BY flightPhase;
+```
+
+As we see, the flightPhase `landing` has the most number of incidents linked to it, `unknown` has the least.
+
+### Task 5 : Create a SQL query against your database to find the flight phase that had an above average number bird strike incidents (during any flight phase). 
+
+```{sql connection=mydb}
+SELECT flightPhase, COUNT(iid) as number_of_bird_strike_incidents
+FROM incidents
+GROUP BY flightPhase
+HAVING number_of_bird_strike_incidents >(
+SELECT AVG(no) as averg
+FROM(SELECT flightPhase, COUNT(iid) as no
+FROM incidents
+GROUP BY flightPhase) as abc);
+```
+
+As we see, `takeoff` and `landing` phases have more than average number of bird strike incidents as compared to other phases.
+
+### Task 6 : Create a SQL query against your database to find the average number of bird strike incidents by month (across all years). Include all airlines and all flights. 
+
+```{sql connection=mydb}
+SELECT *
+FROM incidents
+WHERE iid=200830
+```
+
+
+```{sql connection=mydb}
+SELECT M as Month_Name, ROUND(AVG(h)) as average_number_of_bird_strike_incidents
+FROM(
+SELECT M,Y, COUNT(iid) as h
+FROM
+(SELECT iid, MONTH(date) as M, YEAR(DATE) as Y
+FROM incidents) as def
+GROUP BY M,Y
+) as ghi
+GROUP BY M
+```
+
+As we see, most of the bird strike incidents occurred in August (08). This could be caused by the probable bad weather during this month.
+
+### Task 7 : Build a column chart that visualizes the average number of bird strikes incidents per year from 2005 to 2011.
+
+```{r warning=FALSE}
+cmmd ="SELECT Y as Year, COUNT(iid) as average_number_of_bird_strikes_incidents
+FROM
+(SELECT iid, MONTH(date) as M, YEAR(DATE) as Y
+FROM incidents) as def
+WHERE Y BETWEEN '2005' AND '2011'
+GROUP BY Y;"
+
+q = dbGetQuery(mydb,cmmd)
+
+print(q)
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(data = q) +
+geom_bar(aes(x = as.factor(Year), y = average_number_of_bird_strikes_incidents, fill = as.factor(Year)), stat = "identity") +
+labs(x = "Year", y = "No. of Incidents", title = "Bird Strike Incidents per year")
+```
+
+As we see, 2009 had the most number of incidents between 2005 and 2011
+
+### Task 8 : Create a stored procedure in MySQL (note that if you used SQLite, then you cannot complete this step) that adds a new bird strike incident to the database. You may decide what you need to pass to the stored procedure to add a bird strike incident and you must account for there being potentially a new airport. After insertion, show (in R) that your procedure worked. 
+
+DROP if the stored procedure exists
+```{sql connection=mydb}
+DROP PROCEDURE IF EXISTS insertplease;
+```
+
+DROP if the stored procedure exists
+```{sql connection=mydb}
+DROP PROCEDURE IF EXISTS forNewAirport;
+```
+
+Defining Stored Procedure to add a new airport to the Airports table
+```{r}
+cmmd0 ="
+CREATE PROCEDURE forNewAirport(
+	IN originairportname VARCHAR(32),
+	IN originairportState VARCHAR(32)
+)
+BEGIN
+	INSERT INTO airports(airportName, state)
+	VALUES (originairportname,originairportState); 
+END "
+
+dbExecute(mydb,cmmd0)
+```
+
+This stored procedure `forNewAirport` will be called if a new airportName is attempted to be inserted. This will insert the new airportName and the state (origin state) into the airports table and aid will be assigned to it so that a primary-foreign key relationship can be established between airports and incidents. 
+
+```{r}
+cmmd ="
+CREATE PROCEDURE insertplease(
+	IN iid INTEGER,
+  IN date DATE,
+	IN aName VARCHAR(32),
+	IN aState VARCHAR(32),
+	IN airline VARCHAR(32),
+	IN aircraft VARCHAR(32),
+	IN flightPhase VARCHAR(32),
+	IN impact INTEGER,
+	IN cond INTEGER)
+BEGIN
+  IF(EXISTS(SELECT * from airports WHERE airportName=aName)) = 0 THEN
+  CALL forNewAirport(aName,aState);
+  END IF;
+  INSERT INTO incidents(iid, date, origin,airline,aircraft,flightPhase,impact,cond)
+	 VALUES (iid, date, (SELECT DISTINCT(aid) from airports WHERE airportName=aName),airline,aircraft,flightPhase,impact,cond); 
+END;"
+
+dbExecute(mydb,cmmd)
+```
+
+
+
+This is the main stored procedure `insertplease` which will insert the new data into the incidents table. It will first check if a new airportName has been attempted to be inserted, then it will call the `forNewAirport` stored procedure to insert the airportName and origin state in the airports table (so that the FK constraint is maintained) and then insert the details in incidents table. 
+
+
+**Note :- When we call a stored procedure that is just a select statement, it sends back more than one result set. Method above simply discards the extra results.**
+
+```{r}
+sqlstmt = 'CALL insertplease(77774,"2000-11-23","ShuchitaIntlAirport","MA","AMERICAN AIRLINES","Airplane","takeoff",0,1);'
+
+res = dbSendQuery(mydb,sqlstmt)
+
+data = fetch(res,n=-1)
+
+while(dbMoreResults(mydb)==TRUE){
+  dbNextResult(mydb)
+}
+```
+
+```{r}
+data
+```
+
+As we see below, our stored procedure works perfectly and inserts the new data into the incidents table.
+
+```{r}
+check_sp <- dbGetQuery(mydb, "SELECT * FROM incidents WHERE iid = 77774;")
+check_sp
+```
+
+```{r}
+sqlstmt = 'CALL insertplease(77778,"2011-04-28","SohamIntlAirport","NY","ABX AIR","Airplane","landing",1,3);'
+
+res = dbSendQuery(mydb,sqlstmt)
+
+data = fetch(res,n=-1)
+
+while(dbMoreResults(mydb)==TRUE){
+  dbNextResult(mydb)
+}
+```
+
+```{r}
+check_sp <- dbGetQuery(mydb, "SELECT * FROM incidents WHERE iid = 77778;")
+check_sp
+```
+
+**Disconnecting the database**
+```{r}
+dbDisconnect(mydb)
+```
