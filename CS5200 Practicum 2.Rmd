@@ -1,0 +1,490 @@
+---
+Title: R Notebook
+output:
+  html_document:
+    df_print: paged
+---
+**Author(s) :** 
+
+**Soham Shinde (shinde.so@northeastern.edu)**
+
+**Shuchita Mishra (mishra.shu@northeastern.edu)**
+
+# PRATICUM II 
+
+In this practicum you will extract data from an XML document and then store the data relationally in a SQLite database. That database represents a "transactional" database. Then you will extract data from the transactional database and create an "analytical" database using a star schema in MySQL. Finally, you will query facts from the MySQL analytical database. This will require that you connect to two different databases simultaneously -- a common occurrence in practice.
+
+Before you begin, download the PubMed catalog, save the XML file locally in the same folder as your R Notebook, and then inspect the file to familiarize yourself with its content and structure. 
+
+## Part 1 (40 pts) Load XML
+Create a normalized relational OLTP database and populate it with data from an XML document.
+
+---------------------------------------------------------------------------------------------------------------------------------------------
+### 1. (0 pts / 0.1 hrs) 
+Create an R Notebook for Part 1; Part 2 will be done in a different notebook. 
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+### 2. (3 pts / 1 hr) 
+Create a normalized relational schema that contains the following entities/tables: Articles, Journals, Authors -----> 3NF  
+
+Use the XML document to determine the appropriate attributes (fields/columns) for the entities (tables). While there may be other types of publications in the XML, you only need to deal with articles in journals. 
+
+Create appropriate primary and foreign keys, so we created ArticleID, AuthorID and id for Articles, Authors and Authorship tables respectively. Where necessary, add synthetic surrogate keys, so we added the above keys as in index.
+
+* For articles you should minimally store the article Title (<ArticleTitle>) and month and year created (<ArticleDate>)
+* For journals store the journal name/Title, Volume, Issue, and publication date. 
+* For authors you should store last name, first name, Initials, and Affiliation.
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+### 3. (2 pts / 0.5 hrs) 
+Include an image of an ERD showing your model in your R Notebook. 
+
+The ERD for our schema is as follows: 
+
+Link: https://lucid.app/lucidchart/db228dde-23fb-43ab-9968-dea49fd2ed64/edit?invitationId=inv_244af9a0-5ca1-4c41-8631-99fd33b5f03e
+
+```{r }
+library(knitr)
+url <- "https://i.imgur.com/w6h282N.jpeg"
+knitr::include_graphics(url)
+```
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+### 4. (10 pts / 1 hr) 
+Realize the relational schema in SQLite (placed the CREATE TABLE statements into SQL chunks in our R Notebook). 
+
+Use the appropriate tag for publication date. 
+
+Create a SQLite database that implements the schema
+
+```{r}
+library(RSQLite)
+
+dbfile = "p2DB.sqlite"
+dbcon <- dbConnect(RSQLite::SQLite(), dbfile)
+```
+
+Drop tables if exists
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Authors
+```
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Journals
+```
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Articles
+```
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Authorship
+```
+
+
+Create Tables
+
+```{sql connection=dbcon}
+CREATE TABLE Journals (
+  ISSN TEXT PRIMARY KEY NOT NULL,
+  Title TEXT NOT NULL,
+  Volume INTEGER NOT NULL,
+  Issue INTEGER NOT NULL,
+  PubDate DATE NOT NULL);
+```
+
+```{sql connection=dbcon}
+CREATE TABLE Articles (
+  ArticleID INTEGER PRIMARY KEY NOT NULL,
+  Title TEXT NOT NULL,
+  ArticleDate DATE NOT NULL,
+  ISSN TEXT NOT NULL,
+  CONSTRAINT fk_1 FOREIGN KEY (ISSN) references Journals(ISSN) ON UPDATE CASCADE);
+```
+
+```{sql connection=dbcon}
+CREATE TABLE Authors (
+  AuthorID INTEGER PRIMARY KEY NOT NULL,
+  LastName TEXT NOT NULL,
+  ForeName TEXT NOT NULL,
+  Initials TEXT NOT NULL,
+  Affiliation TEXT);
+```
+
+```{sql connection=dbcon}
+CREATE TABLE Authorship (
+  id INTEGER PRIMARY KEY NOT NULL,
+  AuthorID INTEGER NOT NULL,
+  ArticleID INTEGER NOT NULL,
+  CONSTRAINT fk_2 FOREIGN KEY (AuthorID) references Authors(AuthorID) ON UPDATE CASCADE,
+  CONSTRAINT fk_3 FOREIGN KEY (ArticleID) references Article(ArticleID) ON UPDATE CASCADE);
+```
+
+
+----------------------------------------------------------------------------------------------------------------------------------------------
+### 5. (25 pts / 4 hrs) 
+Extract and transform the data from the XML and then load into the appropriate tables in the database. 
+
+Since, the assignment asked us to not (directly and solely) use xmlToDataFrame, we instead parsed the XML using a combination of node-by-node tree traversal and XPath. 
+
+It is not feasible to use XPath to extract all journals, then all authors, etc. as some are missing and won't match up. 
+
+You will need to iterate through the top-level nodes. 
+
+While outside the scope of the course, this task could also be done through XSLT. 
+
+Do not store duplicate authors or journals. 
+
+For dates, we devised a conversion scheme, where we re-formatted the date into YYYY-MM-DD format. Document your decision, and convert all dates to your encoding scheme.
+
+
+### Reading the XML file and parse into DOM
+```{r}
+library(XML)
+
+xmlDOC <- xmlParse(file = "pubmed_sample.xml")
+```
+
+### Create data frames to store data
+
+```{r}
+# Root
+r <- xmlRoot(xmlDOC)
+
+# number of articles
+n <- xmlSize(r)
+
+Journals.df <- data.frame (
+                     ISSN = character(),
+                     Title = character(),
+                     Volume = character(),
+                     Issue = character(),
+                     date = character(),
+                     stringsAsFactors = F)
+
+Articles.df <- data.frame (
+                     Title = character(),
+                     ArticleDate = character(),
+                     ISSN = character(),
+                     stringsAsFactors = F)
+
+
+Authors.df  <- data.frame (
+                     LastName = character(),
+                     ForeName = character(),
+                     Initials = character(),
+                     Affiliation = character(),
+                     stringsAsFactors = F)
+#Datatpe???
+Authorship.df  <- data.frame (
+                     ArticleID = integer(),
+                     AuthorID = integer(),
+                     stringsAsFactors = F)
+```
+
+### Load data from xml to data frame.
+
+```{r parseAuthor}
+parseAuthor <- function (anAuthorNode)
+{
+  # parse the article into its components
+  LastName <- xmlValue(anAuthorNode[[1]])
+  ForeName <- xmlValue(anAuthorNode[[2]])
+  Initials <- xmlValue(anAuthorNode[[3]])
+  Affiliation <- xmlValue(anAuthorNode[[4]])
+  newAddr.df <- data.frame(LastName,ForeName,Initials,Affiliation,
+                           stringsAsFactors = F)
+  return(newAddr.df)
+  
+}
+```
+
+### Parsing Months
+```{r monToNum}
+parseMonth <- function (mon){
+   res <- ""
+  if(is.na(mon)) {
+        res <- "01" 
+    }else if(tolower(mon) == "jan"){
+    res <- "01"
+  }
+   else if(tolower(mon) == "feb"){
+    res <- "02"
+   }
+   else if(tolower(mon) == "mar"){
+    res <- "03"
+   }
+   else if(tolower(mon) == "apr"){
+    res <- "04"
+   }
+   else if(tolower(mon) == "may"){
+    res <- "05"
+   }
+   else if(tolower(mon) == "jun"){
+    res <- "06"
+   }
+   else if(tolower(mon) == "jul"){
+    res <- "07"
+   }
+   else if(tolower(mon) == "aug"){
+    res <- "08"
+   }
+   else if(tolower(mon) == "sep"){
+    res <- "09"
+   }
+   else if(tolower(mon) == "oct"){
+    res <- "10"
+   }
+   else if(tolower(mon) == "nov"){
+    res <- "11"
+   }
+   else if(tolower(mon) == "dec"){
+    res <- "12"
+   }
+  return (res)
+}
+```
+
+### Parsing Journal data
+```{r parseJournal}
+parseJournal <- function (anJournalNode)
+{
+  # parse the article into its components
+  ISSN <- xmlValue(anJournalNode[[1]])
+  Title <- xmlValue(anJournalNode[[3]])
+  journalIssue <- anJournalNode[[2]]
+  Volume <- xmlValue(journalIssue[[1]])
+  Issue <- xmlValue(journalIssue[[2]])
+  PubDateEx <- journalIssue[[3]]
+  
+  if(!is.null(PubDateEx)){
+    if(xmlName(PubDateEx[[1]]) == "MedlineDate"){
+      dateString <- xmlValue(PubDateEx[[1]])
+      year <- substr(dateString, 1, 4)
+      mon <- parseMonth(substr(dateString,6,8))
+      day <- "01"
+    }else{
+     year <- xmlValue(PubDateEx[[1]])
+     mon <- parseMonth(xmlValue(PubDateEx[[2]]))
+     day <- xmlValue(PubDateEx[[3]])
+    }
+    
+    if(!is.na(day)){
+      PubDate <- gsub(" ", "", paste(year,'-',mon,'-',day))
+    }else {
+       PubDate <- gsub(" ", "", paste(year,'-',mon,'-01'))
+    }
+    
+    
+  } else{
+      PubDate <- ""
+  }
+  
+  newJour.df <- data.frame(ISSN,Title,Volume,Issue,PubDate,
+                           stringsAsFactors = F)
+  
+  return(newJour.df)
+  
+}
+```
+
+### Parsing Article data
+```{r parseArticle}
+parseArticle <- function (anArticleNode, dateC)
+{
+  # parse the article into its components
+  
+  journal <- anArticleNode[[1]]
+  ISSN <- xmlValue(journal[[1]])
+  year <- xmlValue(dateC[[1]])
+  mon <- xmlValue(dateC[[2]])
+  day <- xmlValue(dateC[[3]])
+  ArticleDate <-  gsub(" ", "", paste(year,'-',mon,'-',day))
+  Title <- xmlValue(anArticleNode[[2]])
+  newArr.df <- data.frame(Title,ArticleDate,ISSN,
+                           stringsAsFactors = F)
+  return(newArr.df)
+  
+}
+```
+
+### iterate over the first-level child elements off the root i.e. the <PubmedArticle> elements 
+```{r}
+
+library(dplyr)
+
+for (i in 1:n)
+{
+  # get next PubmedArticle node
+  pubmedArticle <- r[[i]]
+  medlineCitation <- pubmedArticle[[1]]
+  temp <- medlineCitation[[5]]
+  temp2 <- xmlValue(temp[[1]])
+  
+  #MENTION??????
+  
+  print(temp2)
+  if  ((temp2 == 'United States') || (temp2=='England')){
+    article <- medlineCitation[[4]]}
+  else{
+    article <- medlineCitation[[5]]
+    }
+  ArticleDate <- medlineCitation[[2]]
+  journal <- article[[1]]
+  authorList <- article[[6]]
+  author <- authorList[[1]]
+  
+  # parse author
+  for(a in 1:xmlSize(authorList)) {
+      authors <- authorList[[a]]
+      au.df <- parseAuthor(authors)
+      Authors.df <- bind_rows(Authors.df, au.df)
+    }
+   
+   # parse journal
+   j.df <- parseJournal(journal)
+   Journals.df <- bind_rows(Journals.df, j.df)
+   
+   # parse article
+    a.df <- parseArticle(article, ArticleDate)
+    Articles.df <- bind_rows(Articles.df, a.df)
+   
+}
+
+```
+
+### fill missing affliation to default
+
+```{r}
+Authors.df$Affiliation[is.na(Authors.df$Affiliation)]<- "None yet"
+
+```
+
+### remove na values
+
+```{r}
+Authors.df <- na.omit(Authors.df)                           
+```
+
+### remove duplicate rows
+
+```{r}
+Authors.df <- Authors.df %>% distinct(LastName, ForeName, .keep_all = TRUE)
+Authors.df
+```   
+
+```{r}
+Authors.df <- cbind(AuthorID = 1:nrow(Authors.df), Authors.df)
+```
+
+### Display author dataframe
+
+```{r}
+Authors.df
+```
+
+### Remove date column and NA fields
+
+```{r}
+Journals.df <- within(Journals.df, rm(date))
+Journals.df <- na.omit(Journals.df)  
+
+```
+
+```{r}
+Journals.df <- Journals.df %>% distinct(ISSN, .keep_all = TRUE)
+```
+
+### Checking the dataframes
+```{r}
+Journals.df
+```
+
+```{r}
+Articles.df <- cbind(ArticleID = 1:nrow(Articles.df), Articles.df) 
+```
+
+```{r}
+Articles.df
+```
+
+```{r}
+library(dplyr)
+
+for (i in 1:n)
+{
+  # get next PubmedArticle node
+  pubmedArticle <- r[[i]]
+  
+  medlineCitation <- pubmedArticle[[1]]
+  
+  article <- medlineCitation[[5]]
+  # PROBLEM ????? 2,7,17
+  # article <- medlineCitation[[4]]
+  
+  authorList <- article[[6]]
+  
+  
+   Title <- xmlValue(article[[2]])
+   #print(Title)
+   #print(Articles.df$Title)
+   
+   ArticleID <- Articles.df$ArticleID[which(Articles.df$Title == Title)]
+   
+   if (i==2){
+   print(Title)  
+   print(Articles.df$Title)  
+   print(ArticleID)}
+   
+   authorListSize <- xmlSize(authorList)
+  
+   for(a in 1:authorListSize) {
+      authors <- authorList[[a]]
+      LastName <- xmlValue(authors[[1]])
+      ForeName <- xmlValue(authors[[2]])
+      
+      AuthorID <- Authors.df$AuthorID[which(Authors.df$LastName == LastName & Authors.df$ForeName == ForeName)]
+       
+      if(!is.null(AuthorID) & length(AuthorID) > 0){
+        newArr.df <- data.frame(ArticleID,AuthorID,stringsAsFactors = F)
+        Authorship.df <- bind_rows(Authorship.df, newArr.df)
+      }
+    }
+}
+```
+
+
+```{r}
+Authorship.df <- cbind(id = 1:nrow(Authorship.df), Authorship.df) 
+```
+
+remove duplicates
+```{r}
+Authorship.df <- Authorship.df %>% distinct(ArticleID, AuthorID, .keep_all = TRUE)                        # Apply na.omit function
+```
+
+
+```{r}
+Authorship.df
+```
+
+### write to SQL Table
+
+```{r}
+dbWriteTable(dbcon, "Authors", Authors.df, overwrite = T)
+```
+
+```{r}
+dbWriteTable(dbcon, "Articles", Articles.df, overwrite = T)
+```
+
+```{r}
+dbWriteTable(dbcon, "Journals", Journals.df, overwrite = T)
+```
+
+```{r}
+dbWriteTable(dbcon, "Authorship", Authorship.df, overwrite = T)
+```
+
+### Checking
+```{sql connection=dbcon}
+SELECT * FROM Journals ORDER BY Title
+```
